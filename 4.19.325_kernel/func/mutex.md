@@ -360,15 +360,22 @@ __ww_mutex_check_waiters(struct mutex *lock, struct ww_acquire_ctx *ww_ctx)
 {
 	struct mutex_waiter *cur;
 
-	lockdep_assert_held(&lock->wait_lock);
+	// 确保当前线程持有锁的 wait_lock（自旋锁），防止并发操作等待队列
+    lockdep_assert_held(&lock->wait_lock);
 
-	list_for_each_entry(cur, &lock->wait_list, list) {
-		if (!cur->ww_ctx)
-			continue;
+    // 遍历等待队列中的每一个 mutex_waiter（从链表头部开始）
+    list_for_each_entry(cur, &lock->wait_list, list) {
+        // 跳过没有 ww_ctx 的等待者（非优先级继承场景）
+        if (!cur->ww_ctx)
+            continue;
 
-		if (__ww_mutex_die(lock, cur, ww_ctx) ||
-		    __ww_mutex_wound(lock, cur->ww_ctx, ww_ctx))
-			break;
+        // 处理等待策略：
+        // 1. 检查是否需要触发 "等待-死亡"（Wait-Die）逻辑
+        // 2. 检查是否需要触发 "伤害-等待"（Wound-Wait）逻辑
+        // 若任意条件满足，终止遍历（已处理关键竞争）
+        if (__ww_mutex_die(lock, cur, ww_ctx) ||
+            __ww_mutex_wound(lock, cur->ww_ctx, ww_ctx))
+            break;
 	}
 }
 ```
@@ -383,33 +390,97 @@ __ww_mutex_check_waiters(struct mutex *lock, struct ww_acquire_ctx *ww_ctx)
 **触发场景**  
 当锁被释放或线程加入等待队列时调用
 
+**ww_ctx数据结构** 
+
+是 Linux 内核中用于实现 ​​等待-死亡（Wait-Die）​​ 和 ​​伤害-等待（Wound-Wait）​​ 策略的核心数据结构，全称为 ​​Wait/Wound Context​​。它主要用于解决 ​​优先级反转​​（Priority Inversion）问题，特别是在 ​​嵌套锁获取​​（多个互斥锁按不同顺序获取）的场景中
+
+/mutex.h:
+
+![alt text](image.png)
+
+/ww_mutex.h:
+```
+//定义 Wound/Wait 互斥锁的类别，管理全局策略和调试信息
+struct ww_class {
+    atomic_long_t stamp;          // 全局原子时间戳，用于生成唯一优先级标识
+    struct lock_class_key acquire_key;  // 锁依赖跟踪的调试键
+    struct lock_class_key mutex_key;    // 互斥锁的调试键
+    const char *acquire_name;     // 获取上下文的调试名称
+    const char *mutex_name;       // 互斥锁的调试名称
+    unsigned int is_wait_die;     // 策略标志：1=Wait-Die，0=Wound-Wait
+};
+
+//跟踪任务在获取多个锁时的上下文状态
+struct ww_acquire_ctx {
+    struct task_struct *task;     // 所属任务
+    unsigned long stamp;          // 当前上下文的时间戳（优先级标识）
+    unsigned int acquired;        // 已成功获取的锁数量
+    unsigned short wounded;       // 是否被“伤害”（需释放锁）
+    unsigned short is_wait_die;   // 继承自 ww_class 的策略
+    // 调试字段（CONFIG_DEBUG_MUTEXES）
+    struct ww_class *ww_class;    // 关联的锁类别
+    struct ww_mutex *contending_lock; // 当前竞争中的锁
+    // 锁依赖跟踪（CONFIG_DEBUG_LOCK_ALLOC）
+    struct lockdep_map dep_map;   
+    // 死锁注入测试（CONFIG_DEBUG_WW_MUTEX_SLOWPATH）
+    unsigned int deadlock_inject_interval;
+    unsigned int deadlock_inject_countdown;
+};
+
+//扩展标准互斥锁，支持 Wound/Wait 机制
+struct ww_mutex {
+    struct mutex base;            // 基础互斥锁
+    struct ww_acquire_ctx *ctx;   // 当前持有锁的上下文
+    // 调试字段（CONFIG_DEBUG_MUTEXES）
+    struct ww_class *ww_class;    // 所属锁类别
+};
+```
+
 ### (2) `__ww_mutex_wound`
 
+时间戳越小，优先级越高
+
+如 a.stamp < b.stamp
+
+则a调用该函数标记b为wound
+
+并唤醒b，b释放锁后a获取
 ```
 static bool __ww_mutex_wound(struct mutex *lock,
 			     struct ww_acquire_ctx *ww_ctx,
 			     struct ww_acquire_ctx *hold_ctx)
 {
-	struct task_struct *owner = __mutex_owner(lock);
+	// 获取当前锁的持有者线程（清除标志位后的 task_struct 指针）
+    struct task_struct *owner = __mutex_owner(lock);
 
-	lockdep_assert_held(&lock->wait_lock);
+    // 断言：确保调用者已持有锁的 wait_lock（防止并发操作）
+    lockdep_assert_held(&lock->wait_lock);
 
-	if (!hold_ctx)
-		return false;
+    // 若持有者上下文不存在（例如锁未被占用），直接返回 false
+    if (!hold_ctx)
+        return false;
 
-	if (!owner)
-		return false;
+    // 若锁当前无持有者（原子操作读到的 owner 为空），返回 false
+    if (!owner)
+        return false;
 
-	if (ww_ctx->acquired > 0 && __ww_ctx_stamp_after(hold_ctx, ww_ctx)) {
-		hold_ctx->wounded = 1;
+    // 判断是否需要触发 "Wound" 操作：
+    // 1. 当前线程已持有至少一个锁（acquired > 0）
+    // 2. 持有者上下文的时间戳比当前线程的上下文更新（即优先级更低）
+    if (ww_ctx->acquired > 0 && __ww_ctx_stamp_after(hold_ctx, ww_ctx)) {
+        // 标记持有者上下文为 "受伤"（需释放锁）
+        hold_ctx->wounded = 1;
 
-		if (owner != current)
-			wake_up_process(owner);
+        // 若持有者线程非当前线程，唤醒持有者重新调度，处理退让操作
+        if (owner != current)
+            wake_up_process(owner);
 
-		return true;
-	}
+        // 返回 true 表示已触发 Wound 操作
+        return true;
+    }
 
-	return false;
+    // 不满足条件，返回 false
+    return false;
 }
 ```
 **作用**  
@@ -459,3 +530,25 @@ static void __mutex_handoff(struct mutex *lock, struct task_struct *task)
 
 **触发场景**  
 在`mutex_unlock`的慢路径中调用
+
+### (4) __ww_mutex_die
+当高优先级线程（请求者）尝试获取低优先级线程（持有者）持有的锁时，高优先级线程会主动退出（“die”），避免潜在的死锁
+```
+static bool __ww_mutex_die(struct mutex *lock, struct mutex_waiter *waiter,
+                           struct ww_acquire_ctx *ww_ctx)
+{
+    // 检查当前线程是否采用 Wait-Die 策略
+    if (!ww_ctx->is_wait_die)
+        return false;
+
+    // 比较请求者（当前线程）和持有者的优先级（时间戳）
+    if (__ww_ctx_stamp_after(waiter->ww_ctx, ww_ctx)) {
+        // 请求者优先级更低（时间戳更大），触发 Die 逻辑
+        debug_mutex_wake_waiter(lock, waiter);
+        wake_up_process(waiter->task); // 唤醒持有者线程
+        return true;
+    }
+
+    return false;
+}
+```
