@@ -62,7 +62,7 @@ atomic_long_try_cmpxchg_acquire检查lock->owner是否为0
         return false;
     }
     ```
-### __mutex_lock_slowpath()
+### __mutex_lock_slowpath() 
 
 慢路径​​（__mutex_lock_slowpath）：处理锁竞争，包括加入等待队列、自旋等待、优先级继承（需扩展）
 
@@ -84,7 +84,7 @@ __mutex_lock(struct mutex *lock, long state, unsigned int subclass,
 	return __mutex_lock_common(lock, state, subclass, nest_lock, ip, NULL, false);
 }
 ```
-__mutex_lock_common()
+__mutex_lock_common() **不重要!!!不需详细读**
 ```
     static __always_inline int __sched
     __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
@@ -253,6 +253,8 @@ __mutex_lock_common()
     }
 ```
 
+以上不需要详细了解
+
 #### 1.乐观自旋
 ```
 static bool mutex_optimistic_spin(struct mutex *lock, ...) {
@@ -260,9 +262,9 @@ static bool mutex_optimistic_spin(struct mutex *lock, ...) {
     if (!mutex_can_spin_on_owner(lock)) goto fail;
     // 获取MCS锁以避免多个任务同时自旋
     if (!osq_lock(&lock->osq)) goto fail;
-    // 自旋等待锁释放
+    // 自旋等待锁释放,owner 是之前通过 __mutex_owner(lock) 或 mutex_can_spin_on_owner() 获取的 ​​预期持有者指针​​
     while (__mutex_owner(lock) == owner) {
-        if (need_resched() || !owner->on_cpu) break;
+        if (need_resched() || !owner->on_cpu) break;//当前线程需要调度或owner不再占有cpu
         cpu_relax();
     }
     osq_unlock(&lock->osq);
@@ -277,15 +279,48 @@ static void __mutex_add_waiter(struct mutex *lock, struct mutex_waiter *waiter) 
         __mutex_set_flag(lock, MUTEX_FLAG_WAITERS); // 设置WAITERS标志
 }
 ```
+__mutex_waiter_is_first
 
-#### 3.阻塞与调度
+判断当前 waiter 是否是等待队列中的​​第一个有效等待者​​（即队列此前为空）
+
+通过 list_first_entry 获取队列首节点，与当前 waiter 比较
+```
+static inline bool __mutex_waiter_is_first(struct mutex *lock, struct mutex_waiter *waiter) {
+    return list_first_entry(&lock->wait_list, struct mutex_waiter, list) == waiter;
+}
+```
+__mutex_set_flag
+
+atomic_long_or 原子设置标志位，避免竞争条件
+
+#define MUTEX_FLAG_WAITERS 0x01：表示锁有等待者，释放锁时需唤醒队列
+```
+static inline void __mutex_set_flag(struct mutex *lock, unsigned long flag)
+{
+	atomic_long_or(flag, &lock->owner);
+}
+```
+
+#### 阻塞与调度
 ```
 set_current_state(TASK_UNINTERRUPTIBLE);
 for (;;) {
     if (__mutex_trylock(lock)) break; // 再次尝试获取锁
     spin_unlock(&lock->wait_lock);
+    //让当前线程主动放弃 CPU，进入睡眠状态，直到被唤醒（如锁释放时）
     schedule_preempt_disabled(); // 主动让出CPU
     spin_lock(&lock->wait_lock);
+}
+```
+schedule_preempt_disabled
+* preempt_disable 的意义​​：
+    * 确保在调用 schedule() 前，当前线程不会被其他高优先级线程抢占。
+    * 保护调度过程的原子性（例如避免在释放锁和调度之间插入其他操作）。
+```
+void schedule_preempt_disabled(void) {
+    preempt_disable();  // 禁用内核抢占
+    schedule();         // 主动触发调度
+    preempt_enable();   // 重新启用抢占
 }
 ```
 
@@ -313,3 +348,114 @@ mutex_unlock()
     └── wake_up_process()          [唤醒等待任务]
 ```
 
+# 优先级继承
+
+## 1. 优先级继承的核心函数
+
+### (1) `__ww_mutex_check_waiters`
+
+```
+static void __sched
+__ww_mutex_check_waiters(struct mutex *lock, struct ww_acquire_ctx *ww_ctx)
+{
+	struct mutex_waiter *cur;
+
+	lockdep_assert_held(&lock->wait_lock);
+
+	list_for_each_entry(cur, &lock->wait_list, list) {
+		if (!cur->ww_ctx)
+			continue;
+
+		if (__ww_mutex_die(lock, cur, ww_ctx) ||
+		    __ww_mutex_wound(lock, cur->ww_ctx, ww_ctx))
+			break;
+	}
+}
+```
+
+**作用**  
+检查等待队列中的线程，并根据优先级继承规则调整锁持有者的优先级。
+
+**实现逻辑**  
+- 遍历等待队列中的线程(`list_for_each_entry`)，判断是否需要触发优先级继承或优先级反转处理
+- 调用`__ww_mutex_die`(处理"等待-死亡"策略)或`__ww_mutex_wound`(处理"伤害-等待"策略)，确保高优先级线程不会被低优先级线程无限阻塞
+
+**触发场景**  
+当锁被释放或线程加入等待队列时调用
+
+### (2) `__ww_mutex_wound`
+
+```
+static bool __ww_mutex_wound(struct mutex *lock,
+			     struct ww_acquire_ctx *ww_ctx,
+			     struct ww_acquire_ctx *hold_ctx)
+{
+	struct task_struct *owner = __mutex_owner(lock);
+
+	lockdep_assert_held(&lock->wait_lock);
+
+	if (!hold_ctx)
+		return false;
+
+	if (!owner)
+		return false;
+
+	if (ww_ctx->acquired > 0 && __ww_ctx_stamp_after(hold_ctx, ww_ctx)) {
+		hold_ctx->wounded = 1;
+
+		if (owner != current)
+			wake_up_process(owner);
+
+		return true;
+	}
+
+	return false;
+}
+```
+**作用**  
+在"伤害-等待"模式下，若当前线程优先级高于锁持有者，强制让锁持有者提升优先级
+
+**实现逻辑**  
+- 通过`__ww_ctx_stamp_after`比较线程优先级时间戳
+- 若当前线程优先级更高，则标记锁持有者为"受伤"(`hold_ctx->wounded = 1`)
+- 并唤醒其重新调度
+
+**触发场景**  
+在锁竞争时由`__ww_mutex_check_waiters`调用
+
+### (3) `__mutex_handoff`
+```
+static void __mutex_handoff(struct mutex *lock, struct task_struct *task)
+{
+	unsigned long owner = atomic_long_read(&lock->owner);
+
+	for (;;) {
+		unsigned long old, new;
+
+#ifdef CONFIG_DEBUG_MUTEXES
+		DEBUG_LOCKS_WARN_ON(__owner_task(owner) != current);
+		DEBUG_LOCKS_WARN_ON(owner & MUTEX_FLAG_PICKUP);
+#endif
+
+		new = (owner & MUTEX_FLAG_WAITERS);
+		new |= (unsigned long)task;
+		if (task)
+			new |= MUTEX_FLAG_PICKUP;
+
+		old = atomic_long_cmpxchg_release(&lock->owner, owner, new);
+		if (old == owner)
+			break;
+
+		owner = old;
+	}
+}
+```
+**作用**  
+在锁释放时，将锁传递给等待队列中优先级最高的线程，并更新标志位(`MUTEX_FLAG_HANDOFF`)
+
+**实现逻辑**  
+- 通过原子操作(`atomic_long_cmpxchg_release`)设置新锁持有者
+- 并调整其优先级
+
+**触发场景**  
+在`mutex_unlock`的慢路径中调用
