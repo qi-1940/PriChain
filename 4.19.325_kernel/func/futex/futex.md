@@ -1,7 +1,9 @@
 # 快速用户空间互斥锁futex
 **是用户态高效同步的底层基础。结合用户态原子操作和内核态阻塞唤醒机制​​，在无竞争时完全在用户态运行（零内核开销），仅在竞争时陷入内核仲裁**
 
+# 参考文献
 https://www.cnblogs.com/HeyLUMouMou/p/17481385.html
+https://www.cnblogs.com/hellokitty2/p/17338589.html
 
 ## 优先级继承的futex操作：
 ### futex_lock_pi()：处理 FUTEX_LOCK_PI 慢路径（竞争时进入内核）。
