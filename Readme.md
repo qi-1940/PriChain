@@ -21,9 +21,7 @@ Linux 锁优先级传递
 
 * email xiexiuqi@huawei.com, cj.chengjian@huawei.com
 
-
 ### 特征
-
 
 *	优先级继承、传递
 
@@ -76,3 +74,4 @@ Linux 锁优先级传递
 
 ## 瓶颈
 - 怎么运行4.19.325内核以及修改后的内核
+    - 解决办法：统一用安装openeuler的虚拟机，通过ssh将虚拟机连接到vscode上便于开发
