@@ -60,8 +60,8 @@ static int __init pri_mutex_test_init(void)
     taskA = kthread_run(thread_func, (void *)30, "taskA");
 
     /* 创建用于死锁检测的线程 */
-    dl_task1 = kthread_run(deadlock_thread1, NULL, "dl1");
-    dl_task2 = kthread_run(deadlock_thread2, NULL, "dl2");
+    //dl_task1 = kthread_run(deadlock_thread1, NULL, "dl1");
+    //dl_task2 = kthread_run(deadlock_thread2, NULL, "dl2");
 
     return 0;
 }
@@ -75,10 +75,10 @@ static void __exit pri_mutex_test_exit(void)
         kthread_stop(taskB);
     if (taskC)
         kthread_stop(taskC);
-    if (dl_task1)
-        kthread_stop(dl_task1);
-    if (dl_task2)
-        kthread_stop(dl_task2);
+    //if (dl_task1)
+    //    kthread_stop(dl_task1);
+    //if (dl_task2)
+    //    kthread_stop(dl_task2);
 }
 
 /* 死锁检测线程1：先锁test_mutex，再尝试锁test_mutex2 */
