@@ -1,0 +1,1 @@
+cmd_/home/qi-1940/PriChain/code/kernel/rb_mutex/rb_mutex.ko := ld -r -m elf_x86_64  -z max-page-size=0x200000 -z noexecstack -T ./scripts/module-common.lds  --build-id  -o /home/qi-1940/PriChain/code/kernel/rb_mutex/rb_mutex.ko /home/qi-1940/PriChain/code/kernel/rb_mutex/rb_mutex.o /home/qi-1940/PriChain/code/kernel/rb_mutex/rb_mutex.mod.o ;  true
