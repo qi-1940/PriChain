@@ -9,18 +9,6 @@ Linux 锁优先级传递
 优先级翻转是指当一个高优先级任务通过锁等机制访问共享资源时, 该锁如果已被一低优先级任务占有, 将可能造成高优先级任务被许多具有较低优先级任务阻塞.
 优先级翻转问题是影响 linux 实时性的障碍之一, 甚至引起很多稳定性问题.
 
-### 所属赛道
-
-2025全国大学生操作系统比赛的"OS功能设计"赛道
-
-### 项目导师
-
-谢秀奇、[成坚](https://kernel.blog.csdn.net)
-
-* gitee/github [Xie XiuQi](https://gitee.com/xiexiuqi), [Cheng Jian](https://github.com/gatieme)
-
-* email xiexiuqi@huawei.com, cj.chengjian@huawei.com
-
 ### 特征
 
 *	优先级继承、传递
