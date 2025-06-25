@@ -45,6 +45,16 @@ int low_prio_thread(void *data)
     }
     
     rt_mutex_unlock(&test_lock);
+
+
+    for (i = 0; i < 5000000; i++) {
+        if (i % 1000000 == 0) {
+            pr_alert("rtmutex L: iteration=%d, current prio: %d, normal_prio: %d\n",
+                    i, current->prio, current->normal_prio);
+        }
+        // 做一些计算工作，避免编译器优化掉循环
+        __asm__ volatile("" : : : "memory");
+    }
     pr_alert("rtmutex L: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     return 0;
 }
@@ -59,12 +69,15 @@ int mid_prio_thread(void *data)
     pr_alert("rtmutex M: START, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);    
     msleep(10);
     // 持续运行一段时间，不需要锁
-    for (i = 0; i < 10000000; i++) {
-        if (i % 1000000 == 0) {
+    for (i = 0; i < 1000000000; i++) {
+        if (i % 100000000 == 0) {
             pr_alert("rtmutex M: iteration=%d, prio: %d, normal_prio: %d\n", i, current->prio, current->normal_prio);
         }
         // 做一些计算工作
         __asm__ volatile("" : : : "memory");
+        if(i == 9999999){
+            schedule();
+        }
     }
     
     pr_alert("rtmutex M: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
