@@ -1,3 +1,0 @@
-/home/qi-1940/PriChain/code/test/rb_mutex/rb_mutex_test.ko
-/home/qi-1940/PriChain/code/test/rb_mutex/rb_mutex_test.o
-
