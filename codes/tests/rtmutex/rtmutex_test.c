@@ -14,6 +14,7 @@ struct sched_param {
 };
 
 static struct rt_mutex test_lock;
+DEFINE_SPINLOCK(time_measure_lock);
 static struct task_struct *task_l, *task_h, *task_m;
 static ktime_t h_block_start_time;
 static ktime_t h_lock_acquire_time;
@@ -45,7 +46,8 @@ int low_prio_thread(void *data)
     }
     
     rt_mutex_unlock(&test_lock);
-
+    pr_alert("rtmutex L: RELEASE rtmutex, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    schedule();
 
     for (i = 0; i < 5000000; i++) {
         if (i % 1000000 == 0) {
@@ -75,7 +77,7 @@ int mid_prio_thread(void *data)
         }
         // 做一些计算工作
         __asm__ volatile("" : : : "memory");
-        if(i == 9999999){
+        if(i == 500000000){
             schedule();
         }
     }
@@ -92,23 +94,28 @@ int high_prio_thread(void *data)
     
     pr_alert("rtmutex H: START, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     
+    spin_lock(&time_measure_lock);
     // 记录开始尝试获取锁的时间
     h_block_start_time = ktime_get();
     pr_alert("rtmutex H: Attempting to acquire lock at time: %lld ns\n", ktime_to_ns(h_block_start_time));
-    
+    if(!rt_mutex_trylock(&test_lock)){//确保能记录H第一次试图获取锁的时间
+        spin_unlock(&time_measure_lock);
+    }
     rt_mutex_lock(&test_lock);
-    
     // 记录获得锁的时间
     h_lock_acquire_time = ktime_get();
+    pr_alert("###\n");
     pr_alert("rtmutex H: GOT rtmutex, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     pr_alert("rtmutex H: Acquired lock at time: %lld ns\n", ktime_to_ns(h_lock_acquire_time));
-    
+    pr_alert("###\n");
     // 计算阻塞时间
     ktime_t block_duration = ktime_sub(h_lock_acquire_time, h_block_start_time);
     pr_alert("rtmutex H: Block duration: %lld ns (%lld us)\n", 
-             ktime_to_ns(block_duration), ktime_to_ns(block_duration) / 1000);
-    
+            ktime_to_ns(block_duration), ktime_to_ns(block_duration) / 1000);
     rt_mutex_unlock(&test_lock);
+    pr_alert("rtmutex H: RELEASE rtmutex, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    spin_unlock(&time_measure_lock);
+    
     pr_alert("rtmutex H: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     return 0;
 }
@@ -117,7 +124,7 @@ static int __init rtmutex_test_init(void)
 {
     pr_info("rtmutex test module loaded\n");
     struct sched_param sp;
-    sp.sched_priority = 80;
+    sp.sched_priority = 25;
     sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
 
     rt_mutex_init(&test_lock);
@@ -144,8 +151,6 @@ static int __init rtmutex_test_init(void)
     }
     kthread_bind(task_m, 0); // 绑定到CPU 0
     wake_up_process(task_m);
-    
-    
     
     // 创建高优先级线程H
     task_h = kthread_create(high_prio_thread, NULL, "high_prio_thread");
