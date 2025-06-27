@@ -1,13 +1,15 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
-#include "rb_mutex.h"
+#include <linux/rtmutex.h>
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
 #include <linux/delay.h>
 #include <linux/cpumask.h>
 #include <linux/ktime.h>
 #include <linux/completion.h>
+#include "rb_mutex.h"
+#include <linux/kthread.h>
 
 struct sched_param {
     int sched_priority;
@@ -120,7 +122,7 @@ int high_prio_thread(void *data)
     return 0;
 }
 
-static int __init rbmutex_test_init(void)
+static int rbmutex_init(void)   // 初始化rb_mutex测试
 {
     pr_info("rbmutex test module loaded\n");
     struct sched_param sp;
@@ -164,11 +166,89 @@ static int __init rbmutex_test_init(void)
     return 0;
 }
 
-static void __exit rbmutex_test_exit(void)
+static void rbmutex_exit(void)  // 退出rb_mutex测试
 {
     pr_info("rbmutex test module unloaded\n");
 }
 
-module_init(rbmutex_test_init);
-module_exit(rbmutex_test_exit);
+
+// ===================== rb_mutex 死锁检测测试 =====================
+static struct rb_mutex mutexA, mutexB;
+static struct task_struct *task1, *task2;
+
+int thread1_fn(void *data)
+{
+    pr_alert("[DLTEST] T1: locking mutexA\n");
+    rb_mutex_lock(&mutexA);
+    pr_alert("[DLTEST] T1: locked mutexA, sleeping...\n");
+    msleep(100);
+
+    pr_alert("[DLTEST] T1: trying to lock mutexB (should deadlock)\n");
+    if (rb_mutex_lock(&mutexB) == RB_MUTEX_DEADLOCK_ERR) {
+        pr_alert("[DLTEST] T1: Deadlock detected by rb_mutex!\n");
+    } else {
+        pr_alert("[DLTEST] T1: locked mutexB (unexpected)\n");
+        rb_mutex_unlock(&mutexB);
+    }
+    rb_mutex_unlock(&mutexA);
+    return 0;
+}
+
+int thread2_fn(void *data)
+{
+    pr_alert("[DLTEST] T2: locking mutexB\n");
+    rb_mutex_lock(&mutexB);
+    pr_alert("[DLTEST] T2: locked mutexB, sleeping...\n");
+    msleep(100);
+
+    pr_alert("[DLTEST] T2: trying to lock mutexA (should deadlock)\n");
+    if (rb_mutex_lock(&mutexA) == RB_MUTEX_DEADLOCK_ERR) {
+        pr_alert("[DLTEST] T2: Deadlock detected by rb_mutex!\n");
+    } else {
+        pr_alert("[DLTEST] T2: locked mutexA (unexpected)\n");
+        rb_mutex_unlock(&mutexA);
+    }
+    rb_mutex_unlock(&mutexB);
+    return 0;
+}
+
+static int __init rb_mutex_deadlock_test_init(void)
+{
+    pr_info("[DLTEST] rb_mutex deadlock test module loaded\n");
+    rb_mutex_init(&mutexA);
+    rb_mutex_init(&mutexB);
+
+    task1 = kthread_run(thread1_fn, NULL, "rbm_t1");
+    task2 = kthread_run(thread2_fn, NULL, "rbm_t2");
+    return 0;
+}
+
+static void __exit rb_mutex_deadlock_test_exit(void)
+{
+    pr_info("[DLTEST] rb_mutex deadlock test module unloaded\n");
+    pr_info("[DLTEST] Total deadlocks detected: %d\n", rb_mutex_get_deadlock_count());
+}
+
+// 合并统一入口/出口
+static int __init rb_mutex_user_init(void)
+{
+    int ret = 0;
+    // 原有rtmutex测试
+    ret = rbmutex_init();
+    msleep(3000);
+    // 死锁测试
+    rb_mutex_deadlock_test_init();
+    return ret;
+}
+
+static void __exit rb_mutex_user_exit(void)
+{
+    rbmutex_exit();
+    rb_mutex_deadlock_test_exit();
+    pr_info("[DLTEST] Total deadlocks detected: %d\n", rb_mutex_get_deadlock_count());
+    pr_info("rb_mutex_user module unloaded\n");
+}
+
+module_init(rb_mutex_user_init);
+module_exit(rb_mutex_user_exit);
 MODULE_LICENSE("GPL"); 

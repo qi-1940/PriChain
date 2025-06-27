@@ -1,14 +1,16 @@
-obj-m := rb_mutex_test.o rb_mutex.o
+# Makefile for rb_mutex_user: 测试rb_mutex外部模块死锁检测
+obj-m := rb_mutex_user.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
-EXTRA_CFLAGS += -I$(M)/../rb_mutex
+# 导入rb_mutex模块的符号表
+ KBUILD_EXTRA_SYMBOLS := ../../../rb_mutex/Module.symvers
 
+# EXTRA_CFLAGS += -I$(PWD)/../rb_mutex
 
 all:
-	make -C $(KDIR) M=$(PWD) modules
-
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
-	make -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
