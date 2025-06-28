@@ -1,4 +1,4 @@
-#include "rb_rwmutex.h"
+#include <linux/rb_rwmutex.h>
 #include <linux/module.h>
 
 void rb_rwmutex_init(struct rb_rwmutex *rw) {

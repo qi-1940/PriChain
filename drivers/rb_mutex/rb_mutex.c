@@ -9,7 +9,7 @@
 #include <linux/jiffies.h>
 #include <linux/errno.h>
 #include <linux/sched/signal.h>
-#include "rb_mutex.h"
+#include <linux/rb_mutex.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("ldfnewbie + ChatGPT");

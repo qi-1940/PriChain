@@ -1,4 +1,4 @@
-#include "rb_rwsem.h"
+#include <linux/rb_rwsem.h>
 #include <linux/module.h>
 
 void rb_rwsem_init(struct rb_rwsem *sem) {
