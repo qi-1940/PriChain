@@ -1,4 +1,4 @@
-![14.彩色中英文左右](.\img\14.彩色中英文左右.jpg)
+![14.彩色中英文左右](./img/14.彩色中英文左右.jpg)
 
 
 
@@ -101,7 +101,7 @@
 
 ​	优先级翻转是指**高优先级任务因等待低优先级任务占用的共享资源而被阻塞**，同时**中等优先级任务抢占低优先级任务**，导致高优先级任务无法及时执行的现象
 
-![](.\img\优先级翻转.png)
+![](./img/优先级翻转.png)
 
 ​	优先级翻转在嵌入式系统、实时操作系统（RTOS）或企业级服务器等多任务环境中，任务（线程/进程）通常被赋予不同的优先级，以确保关键任务能够优先获得 CPU 资源。例如，汽车 ECU、工业控制、航空航天等场景中，某些任务（如安全控制、紧急响应）必须以最高优先级及时执行
 ​	然而，在实际系统运行中，任务之间往往需要通过互斥锁（mutex）等同步机制来保护共享资源。此时，如果高优先级任务需要访问被低优先级任务占用的资源，就可能发生优先级翻转现象
@@ -114,7 +114,7 @@
 
 - 结果是高优先级任务被“反转”成最低优先级，严重影响系统实时性和响应能力。
 
-<img src=".\img\翻转示意图.png" alt="image-20250628152134335"  />
+<img src="./img/翻转示意图.png" alt="image-20250628152134335"  />
 
 **图例说明:**
 
@@ -175,7 +175,7 @@
 
 ​	更系统地说，优先级传递是**通过动态调整任务优先级，解决资源竞争引发的阻塞问题**，本质是优先级继承的实现方式。其核心是**将高优先级任务的优先级“传递”给低优先级任务**，确保资源持有者尽快执行
 
-​	![](.\img\image-20250624174324909.png)	**图例说明:**
+​	![](./img/image-20250624174324909.png)	**图例说明:**
 
 > 1. L持有B
 > 2. M持A→请求B(阻塞)
@@ -500,11 +500,44 @@ project2210132-239331
 
 ## 7. 时延测试程序的介绍与使用
 
+主要思想是用spinlock保证高优先级线程获取锁和记录时间之间不被打断。
 
+* 变量声明：
 
-### 7.1 评估时延测试程序的正确性
+``` c
+DEFINE_SPINLOCK(time_measure_lock);
+static ktime_t h_block_start_time;
+static ktime_t h_lock_acquire_time;
+```
 
+* 在高优先级线程中的应用：
 
+``` c
+int high_prio_thread(void *data)
+{
+    //省略代码
+
+    spin_lock(&time_measure_lock);
+    // 记录开始尝试获取锁的时间
+    h_block_start_time = ktime_get();
+    pr_alert("rbmutex H: Attempting to acquire lock at time: %lld ns\n", ktime_to_ns(h_block_start_time));
+    if(!rb_mutex_trylock(&test_lock)){//记录H第一次试图获取锁的时间，测试程序的设计确保高优先级线程第一次上锁必失败
+        spin_unlock(&time_measure_lock);
+    }
+    rb_mutex_lock(&test_lock);//这里线程会睡眠，直到获得锁
+    // 记录获得锁的时间，高优先级线程获取锁后理应一直运行，故此处不适用锁
+    h_lock_acquire_time = ktime_get();
+
+    //省略代码
+
+    // 计算阻塞时间
+    ktime_t block_duration = ktime_sub(h_lock_acquire_time, h_block_start_time);
+    pr_alert("rbmutex H: Block duration: %lld ns (%lld us)\n", 
+            ktime_to_ns(block_duration), ktime_to_ns(block_duration) / 1000);
+    
+    //省略代码
+} 
+```
 
 ## 8. rbmutex的实现过程与细节
 
@@ -1281,7 +1314,69 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
 
 ## 11. 内核宏开关的实现过程与细节
 
+* 源文件存放在drivers/文件夹下，好处是对makefile的修改简单。源文件的头文件放在/include/linux下，
+  这样测试程序便可以方便的包含锁的头文件。直接使用`#include <linux/rb_mutex.h>`即可。
 
+* 然后创建并修改drivers/Kconfig，新建与drivers并列的menu。在配置内核时，将锁设置为编译进内核。
+
+* **rb_mutex**:
+
+```ABAP
+config RB_MUTEX
+        tristate "RB Mutex Support"
+        depends on MODULES
+        help
+          This enables support for RB Mutex, a custom mutex implementation
+          that can be used as an alternative to rt_mutex.
+
+          If you want to compile it as a module, say M here.
+          If you want to compile it into the kernel, say Y here.
+          If you don't want to compile it, say N here.
+
+          If unsure, say N.
+```
+
+* **rb_rwmutex**:
+
+```ABAP
+config RB_RWMUTEX
+        tristate "RB Read-Write Mutex Support"
+        depends on MODULES
+        help
+          This enables support for RB Read-Write Mutex, a custom read-write
+          mutex implementation that can be used as an alternative to rwlock.
+
+          If you want to compile it as a module, say M here.
+          If you want to compile it into the kernel, say Y here.
+          If you don't want to compile it, say N here.
+
+          If unsure, say N.
+```
+
+* **rb_rwsem**:
+
+```ABAP
+config RB_RWSEM
+        tristate "RB Read-Write Semaphore Support"
+        depends on MODULES
+        helpa
+          This enables support for RB Read-Write Semaphore, a custom read-write
+          semaphore implementation that can be used as an alternative to rwsem.
+
+          If you want to compile it as a module, say M here.
+          If you want to compile it into the kernel, say Y here.
+          If you don't want to compile it, say N here.
+
+          If unsure, say N. 
+```
+
+
+
+![根目录](./img/根目录.png) 
+
+
+
+![子目录](./img/子目录.png)	
 
 ## 12. 创新点
 
@@ -1317,13 +1412,7 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
 
 - 支持递归锁检测和死锁链路的详细输出，便于复杂场景下的调试
 
-  
-
-### 12.2 时延测试程序
-
-
-
-### 12.3 内核宏开关设计
+ 
 
 
 
@@ -1473,7 +1562,7 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
 
       关闭虚拟机，在vmware的虚拟机设置中确认虚拟机的相关设置是否正确
 
-      ![image-20250624154847002](.\img\image-20250624154847002.png)
+      ![image-20250624154847002](./img/image-20250624154847002.png)
 
       确定为NAT链接，且启动时链接选项被勾选。
 
@@ -1531,7 +1620,7 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
 
     * ###### 修改电源熄屏时间
 
-      ​	![image-20250624155420117](.\img\image-20250624155420117.png)
+      ​	![image-20250624155420117](./img/image-20250624155420117.png)
 
   * ##### 配置VSCODE ssh远程连接
 
@@ -1541,7 +1630,7 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
 
       记录网卡的ip地址，即虚拟机的ip
 
-      ![image-20250624155801123](.\img\image-20250624155801123.png)	
+      ![image-20250624155801123](./img/image-20250624155801123.png)	
 
     * ###### 安装ssh服务并做注释修改
 
@@ -1566,17 +1655,17 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
 
       在主机的powershell中尝试用`ssh "username"@ipaddress`连接到虚拟机，出现以下终端画面表示成功
 
-      ![image-20250624160121385](.\img\image-20250624160121385.png)	
+      ![image-20250624160121385](./img/image-20250624160121385.png)	
 
     * ###### 配置vscode
 
       下载remote ssh插件，已下载则跳过，在远程连接选项中打开ssh的配置文件
 
-      ![image-20250624160252197](.\img\image-20250624160252197.png)修改hostname，此处identifyfile先不填，在下一步配置ssh密钥中再添加
+      ![image-20250624160252197](./img/image-20250624160252197.png)修改hostname，此处identifyfile先不填，在下一步配置ssh密钥中再添加
 
     * ###### 配置vscode报错
 
-      ![image-20250624160317673](.\img\image-20250624160317673.png)
+      ![image-20250624160317673](./img/image-20250624160317673.png)
 
     * ###### 报错解决
 
@@ -1600,24 +1689,24 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
 
       出现如下画面，即右上角出现install时，连接成功，点击加号打开新终端
 
-      ![image-20250624160529816](.\img\image-20250624160529816.png)出现如下图片连接成功
+      ![image-20250624160529816](./img/image-20250624160529816.png)出现如下图片连接成功
 
-      ![image-20250624160545676](.\img\image-20250624160545676.png)如果还遇到其他错误，则可以CTRL+SHIFT+U查看输出，进行报错解决	
+      ![image-20250624160545676](./img/image-20250624160545676.png)如果还遇到其他错误，则可以CTRL+SHIFT+U查看输出，进行报错解决	
 
     * ###### 配置免密登录
 
       在windows的powershell中输入`ssh -keygen -t rsa`,之后一路回车，生成密钥
 
-      ![](.\img\image-20250624160710362.png)完成后将该目录下的`id_rsa.pub`中的内容复制到虚拟机的/root/.ssh目录下，建议在vscode的终端中进行该步骤操作，可直接复制
+      ![](./img/image-20250624160710362.png)完成后将该目录下的`id_rsa.pub`中的内容复制到虚拟机的/root/.ssh目录下，建议在vscode的终端中进行该步骤操作，可直接复制
 
-      ![](.\img\image-20250624160724152.png)	
+      ![](./img/image-20250624160724152.png)	
       加入私钥路径，配置完成
 
 * #### 4.19.325内核编译及安装
 
   * ##### 查看当前内核版本
 
-    ![](.\img\image-20250624160951945.png)	
+    ![](./img/image-20250624160951945.png)	
 
     为OE官方发布的内核，这里需要替换成linux标准内核
 
@@ -1695,7 +1784,7 @@ void rb_rwsem_up_write(struct rb_rwsem *sem) {
     uname -r
     ```
 
-    ![](.\img\image-20250624161643708.png)	
+    ![](./img/image-20250624161643708.png)	
 
 ​	
 
