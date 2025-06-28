@@ -8,7 +8,7 @@
 #include <linux/cpumask.h>
 #include <linux/ktime.h>
 #include <linux/completion.h>
-#include "rb_mutex.h"
+#include <linux/rb_mutex.h>
 #include <linux/kthread.h>
 
 struct sched_param {

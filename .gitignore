@@ -4,3 +4,5 @@
 *.order
 *.symvers
 *.tmp_versions
+*.o
+*.ko

@@ -1,4 +1,4 @@
-obj-m := rb_mutex.o
+obj-$(CONFIG_RB_MUTEX) += rb_mutex.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
