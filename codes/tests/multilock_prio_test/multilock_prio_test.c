@@ -24,27 +24,13 @@ static struct mutex regular_lock_x, regular_lock_y;
 static struct task_struct *taskA, *taskB, *taskC, *taskD, *taskE;
 
 // 同步机制
-static struct completion A_has_X, A_has_Y;
-static struct completion B_blocked, C_blocked, D_blocked, E_blocked;
-static struct completion C_sleep_done;
-
-// 结果记录
-static int completion_order[5];
-static int completion_index = 0;
-static DEFINE_SPINLOCK(result_lock);
+static struct completion D_finished, E_finished;
+static struct completion C_created, B_created, D_created  ;
 
 // 测试模式：0=rb_mutex, 1=rtmutex, 2=mutex
 static int test_mode = 0;
 module_param(test_mode, int, 0644);
 MODULE_PARM_DESC(test_mode, "Test mode: 0=rb_mutex, 1=rtmutex, 2=mutex");
-
-void record_completion(int thread_id) {
-    spin_lock(&result_lock);
-    if (completion_index < 5) {
-        completion_order[completion_index++] = thread_id;
-    }
-    spin_unlock(&result_lock);
-}
 
 void lock_X(void) {
     switch (test_mode) {
@@ -78,170 +64,204 @@ void unlock_Y(void) {
 // 1A线程：最低优先级，依次获得X、Y
 int threadA_func(void *data) {
     struct sched_param sp;
+    int i;
     sp.sched_priority = 1;
     sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
     pr_alert("[MULTILOCK_PRIO_TEST] A: START, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+
     lock_X();
-    pr_alert("[MULTILOCK_PRIO_TEST] A: GOT X\n");
-    complete(&A_has_X);
-    msleep(10);
+    pr_alert("[MULTILOCK_PRIO_TEST] A: GOT LOCK X, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     lock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] A: GOT Y\n");
-    complete(&A_has_Y);
-    // 等待E被阻塞，说明所有线程都已阻塞在A身上
-    wait_for_completion(&E_blocked);
-    pr_alert("[MULTILOCK_PRIO_TEST] A: All threads blocked, releasing Y\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] A: GOT LOCK Y, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    msleep(10);
+    
+    // 做一些工作来展示优先级继承效果
+    for (i = 0; i < 1000000000; i++) {
+        if (i % 200000000 == 0) {
+            pr_alert("[MULTILOCK_PRIO_TEST] A: working iteration %d, prio: %d, normal_prio: %d\n", 
+                     i, current->prio, current->normal_prio);
+            schedule();
+        }
+        __asm__ volatile("" : : : "memory");
+    }
+    
+    pr_alert("[MULTILOCK_PRIO_TEST] A: releasing Y, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     unlock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] A: RELEASED Y\n");
-    msleep(50);
-    pr_alert("[MULTILOCK_PRIO_TEST] A: releasing X\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] A: RELEASED Y, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    
+    // 做一些工作验证优先级继承是否正确
+    for (i = 0; i < 200000000; i++) {
+        if (i % 50000000 == 0) {
+            pr_alert("[MULTILOCK_PRIO_TEST] A: after Y released, working iteration %d, prio: %d, normal_prio: %d\n", 
+                     i, current->prio, current->normal_prio);
+            schedule();
+        }
+        __asm__ volatile("" : : : "memory");
+    }
+    
+    pr_alert("[MULTILOCK_PRIO_TEST] A: releasing X, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     unlock_X();
-    pr_alert("[MULTILOCK_PRIO_TEST] A: RELEASED X\n");
-    record_completion(1);
-    pr_alert("[MULTILOCK_PRIO_TEST] A: END\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] A: RELEASED X, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    pr_alert("[MULTILOCK_PRIO_TEST] A: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     return 0;
 }
 
-// 2B线程：优先级2，阻塞在Y
+// 2B线程：优先级2，干扰线程，不需要锁，抢占A
 int threadB_func(void *data) {
     struct sched_param sp;
+    int i = 0;
     sp.sched_priority = 2;
     sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
-    pr_alert("[MULTILOCK_PRIO_TEST] B: START\n");
-    wait_for_completion(&A_has_Y);
-    pr_alert("[MULTILOCK_PRIO_TEST] B: Trying to get Y\n");
-    complete(&B_blocked);
-    lock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] B: GOT Y\n");
-    unlock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] B: RELEASED Y\n");
-    record_completion(2);
-    pr_alert("[MULTILOCK_PRIO_TEST] B: END\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] B: START, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    
+    // 通知主线程B已经创建
+    complete(&B_created);
+    msleep(5);
+    
+    // 持续抢占A，直到D结束
+    while (!kthread_should_stop()) {
+        i++;
+        
+        if (i % 100000000 == 0) {
+            pr_alert("[MULTILOCK_PRIO_TEST] B: preempting A, iteration %d, prio: %d, normal_prio: %d\n", 
+                     i, current->prio, current->normal_prio);
+            // 检查D是否已经结束
+            if (try_wait_for_completion(&D_finished)) {
+                pr_alert("[MULTILOCK_PRIO_TEST] B: D has finished, B will stop, prio: %d, normal_prio: %d\n", 
+                         current->prio, current->normal_prio);
+                break;
+            }
+            schedule();
+        }
+        __asm__ volatile("" : : : "memory");
+    }
+    
+    pr_alert("[MULTILOCK_PRIO_TEST] B: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     return 0;
 }
 
-// 4C线程：优先级4，阻塞在Y，先睡眠
+// 4C线程：优先级4，干扰线程，不需要锁，抢占A
 int threadC_func(void *data) {
     struct sched_param sp;
+    int i = 0;
     sp.sched_priority = 4;
     sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
-    pr_alert("[MULTILOCK_PRIO_TEST] C: START\n");
-    wait_for_completion(&A_has_Y);
-    pr_alert("[MULTILOCK_PRIO_TEST] C: Sleeping...\n");
-    msleep(100);
-    complete(&C_sleep_done);
-    pr_alert("[MULTILOCK_PRIO_TEST] C: Trying to get Y\n");
-    complete(&C_blocked);
-    lock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] C: GOT Y\n");
-    unlock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] C: RELEASED Y\n");
-    record_completion(4);
-    pr_alert("[MULTILOCK_PRIO_TEST] C: END\n");
+    // 等待B线程完全启动
+    wait_for_completion(&B_created);
+    pr_alert("[MULTILOCK_PRIO_TEST] C: START, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    
+    // 通知D和E线程C已经创建
+    complete(&C_created);
+    msleep(5);
+    
+    // 持续抢占A，直到E结束
+    while (!kthread_should_stop()) {
+        i++;
+        
+        if (i % 100000000 == 0) {
+            pr_alert("[MULTILOCK_PRIO_TEST] C: preempting A, iteration %d, prio: %d, normal_prio: %d\n", 
+                     i, current->prio, current->normal_prio);
+            // 检查E是否已经结束
+            if (try_wait_for_completion(&E_finished)) {
+                pr_alert("[MULTILOCK_PRIO_TEST] C: E has finished, C will stop, prio: %d, normal_prio: %d\n", 
+                         current->prio, current->normal_prio);
+                break;
+            }
+            schedule();
+        }
+        __asm__ volatile("" : : : "memory");
+    }
+    
+    pr_alert("[MULTILOCK_PRIO_TEST] C: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     return 0;
 }
 
-// 3D线程：优先级3，阻塞在X，等待C睡眠后再运行
+// 3D线程：优先级3，阻塞在X，等待C生成后再运行
 int threadD_func(void *data) {
     struct sched_param sp;
     sp.sched_priority = 3;
     sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
-    pr_alert("[MULTILOCK_PRIO_TEST] D: START\n");
-    wait_for_completion(&C_sleep_done);
-    pr_alert("[MULTILOCK_PRIO_TEST] D: Trying to get X\n");
-    complete(&D_blocked);
+    // 等待C线程完全启动
+    wait_for_completion(&C_created);
+    msleep(1);
+    complete(&D_created);
+    pr_alert("[MULTILOCK_PRIO_TEST] D: START, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    pr_alert("[MULTILOCK_PRIO_TEST] D: TRY LOCK X, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     lock_X();
-    pr_alert("[MULTILOCK_PRIO_TEST] D: GOT X\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] D: GOT LOCK X, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     unlock_X();
-    pr_alert("[MULTILOCK_PRIO_TEST] D: RELEASED X\n");
-    record_completion(3);
-    pr_alert("[MULTILOCK_PRIO_TEST] D: END\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] D: RELEASE LOCK X, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    pr_alert("[MULTILOCK_PRIO_TEST] D: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    complete(&D_finished);
     return 0;
 }
 
-// 5E线程：优先级5，阻塞在Y，等待C和D都阻塞后再运行
+// 5E线程：优先级5，阻塞在Y，等待C创建后再运行
 int threadE_func(void *data) {
     struct sched_param sp;
     sp.sched_priority = 5;
     sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
-    pr_alert("[MULTILOCK_PRIO_TEST] E: START\n");
-    wait_for_completion(&C_blocked);
-    wait_for_completion(&D_blocked);
-    pr_alert("[MULTILOCK_PRIO_TEST] E: Trying to get Y\n");
-    complete(&E_blocked);
+    wait_for_completion(&D_created);
+    pr_alert("[MULTILOCK_PRIO_TEST] E: START, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    pr_alert("[MULTILOCK_PRIO_TEST] E: TRY LOCK Y, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     lock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] E: GOT Y\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] E: GOT LOCK Y, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
     unlock_Y();
-    pr_alert("[MULTILOCK_PRIO_TEST] E: RELEASED Y\n");
-    record_completion(5);
-    pr_alert("[MULTILOCK_PRIO_TEST] E: END\n");
+    pr_alert("[MULTILOCK_PRIO_TEST] E: RELEASE LOCK Y, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    pr_alert("[MULTILOCK_PRIO_TEST] E: END, prio: %d, normal_prio: %d\n", current->prio, current->normal_prio);
+    complete(&E_finished);
     return 0;
 }
 
-void print_test_results(void) {
-    int i;
-    char *test_names[] = {"rb_mutex", "rtmutex", "mutex"};
-    pr_alert("[MULTILOCK_PRIO_TEST] ========== TEST RESULTS ==========\n");
-    pr_alert("[MULTILOCK_PRIO_TEST] Test mode: %s\n", test_names[test_mode]);
-    pr_alert("[MULTILOCK_PRIO_TEST] Expected: E(5), C(4), D(3), A(1), B(2)\n");
-    pr_alert("[MULTILOCK_PRIO_TEST] Actual: ");
-    spin_lock(&result_lock);
-    for (i = 0; i < completion_index; i++) {
-        if (completion_order[i] == 5) pr_cont("E(5) ");
-        else if (completion_order[i] == 4) pr_cont("C(4) ");
-        else if (completion_order[i] == 3) pr_cont("D(3) ");
-        else if (completion_order[i] == 2) pr_cont("B(2) ");
-        else if (completion_order[i] == 1) pr_cont("A(1) ");
-    }
-    pr_cont("\n");
-    // 判断测试结果
-    if (completion_index >= 5 &&
-        completion_order[0] == 5 &&
-        completion_order[1] == 4 &&
-        completion_order[2] == 3 &&
-        completion_order[3] == 1 &&
-        completion_order[4] == 2) {
-        pr_alert("[MULTILOCK_PRIO_TEST] RESULT: PASS - Multi-lock priority inheritance correct!\n");
-    } else {
-        pr_alert("[MULTILOCK_PRIO_TEST] RESULT: FAIL - Multi-lock priority inheritance error!\n");
-    }
-    spin_unlock(&result_lock);
-    pr_alert("[MULTILOCK_PRIO_TEST] =====================================\n");
-}
-
 static int __init multilock_prio_test_init(void) {
-    pr_info("[MULTILOCK_PRIO_TEST] rb_mutex multi-lock priority test module loaded\n");
     char *test_names[] = {"rb_mutex", "rtmutex", "mutex"};
+    struct sched_param sp;
+    
+    // 检查test_mode参数有效性
+    if (test_mode < 0 || test_mode > 2) {
+        pr_err("[MULTILOCK_PRIO_TEST] Invalid test_mode %d, must be 0-2\n", test_mode);
+        return -EINVAL;
+    }
+    
+    pr_info("[MULTILOCK_PRIO_TEST] rb_mutex multi-lock priority test module loaded\n");
     pr_info("[MULTILOCK_PRIO_TEST] Testing with: %s\n", test_names[test_mode]);
-    rb_mutex_init(&rb_lock_x); rb_mutex_init(&rb_lock_y);
-    rt_mutex_init(&rt_lock_x); rt_mutex_init(&rt_lock_y);
-    mutex_init(&regular_lock_x); mutex_init(&regular_lock_y);
-    init_completion(&A_has_X); init_completion(&A_has_Y);
-    init_completion(&B_blocked); init_completion(&C_blocked);
-    init_completion(&D_blocked); init_completion(&E_blocked);
-    init_completion(&C_sleep_done);
+    
+    // 设置主线程高优先级，仿照highest测试
+    sp.sched_priority = 90;
+    sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
+
+    rb_mutex_init(&rb_lock_x); 
+    rb_mutex_init(&rb_lock_y);
+    rt_mutex_init(&rt_lock_x);
+     rt_mutex_init(&rt_lock_y);
+    mutex_init(&regular_lock_x); 
+    mutex_init(&regular_lock_y);
+
+    init_completion(&D_finished);
+     init_completion(&E_finished);
+    init_completion(&C_created); 
+    init_completion(&B_created); 
+    init_completion(&D_created);
     // 创建线程A
     taskA = kthread_create(threadA_func, NULL, "thread_A");
-    if (IS_ERR(taskA)) { pr_err("[MULTILOCK_PRIO_TEST] Failed to create thread A\n"); return PTR_ERR(taskA); }
-    kthread_bind(taskA, 0); wake_up_process(taskA);
+    kthread_bind(taskA, 0); 
+    wake_up_process(taskA);
     // 创建线程B
     taskB = kthread_create(threadB_func, NULL, "thread_B");
-    if (IS_ERR(taskB)) { pr_err("[MULTILOCK_PRIO_TEST] Failed to create thread B\n"); return PTR_ERR(taskB); }
-    kthread_bind(taskB, 0); wake_up_process(taskB);
+    kthread_bind(taskB, 0); 
+    wake_up_process(taskB);
     // 创建线程C
     taskC = kthread_create(threadC_func, NULL, "thread_C");
-    if (IS_ERR(taskC)) { pr_err("[MULTILOCK_PRIO_TEST] Failed to create thread C\n"); return PTR_ERR(taskC); }
-    kthread_bind(taskC, 0); wake_up_process(taskC);
-    // 创建线程D
+    kthread_bind(taskC, 0); 
+    wake_up_process(taskC);
+    // 创建线程D（绑定到CPU1）
     taskD = kthread_create(threadD_func, NULL, "thread_D");
-    if (IS_ERR(taskD)) { pr_err("[MULTILOCK_PRIO_TEST] Failed to create thread D\n"); return PTR_ERR(taskD); }
-    kthread_bind(taskD, 0); wake_up_process(taskD);
-    // 创建线程E
+    kthread_bind(taskD, 1); 
+    wake_up_process(taskD);
+    // 创建线程E（绑定到CPU1）
     taskE = kthread_create(threadE_func, NULL, "thread_E");
-    if (IS_ERR(taskE)) { pr_err("[MULTILOCK_PRIO_TEST] Failed to create thread E\n"); return PTR_ERR(taskE); }
-    kthread_bind(taskE, 0); wake_up_process(taskE);
-    msleep(4000);
-    print_test_results();
+    kthread_bind(taskE, 1); 
+    wake_up_process(taskE);
     return 0;
 }
 
@@ -252,5 +272,3 @@ static void __exit multilock_prio_test_exit(void) {
 module_init(multilock_prio_test_init);
 module_exit(multilock_prio_test_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("rb_mutex multi-lock priority inheritance test");
-MODULE_AUTHOR("PriChain"); 
