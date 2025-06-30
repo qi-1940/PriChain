@@ -154,29 +154,41 @@ void rb_mutex_dequeue(struct rb_mutex *mutex, struct rb_mutex_waiter *waiter) {
     update_top_waiter_prio(mutex);
 }
 
-void propagate_priority(struct task_struct *owner, int new_prio) {
-    struct rb_task_info *info = ensure_task_info(owner);
-    if (!info) return;
+void propagate_priority(struct task_struct *owner, int incoming_prio) {
+    struct rb_task_info *info;
+    int combined_prio;
 
+    if (!owner)
+        return;
+
+    info = ensure_task_info(owner);
+    if (!info)
+        return;
+
+    // 合并当前持有的所有锁中最高等待者的优先级
+    combined_prio = get_effective_inherited_prio(info);
+
+    // 如果还有更高优先级的传入请求，合并到最小
+    if (combined_prio > 0)
+        combined_prio = min(combined_prio, incoming_prio);
+    else
+        combined_prio = incoming_prio;
+
+    // 如果第一次被继承，记录原始优先级
     if (info->original_prio < 0)
         info->original_prio = owner->prio;
 
-    int effective = get_effective_inherited_prio(info);
-    if (effective < new_prio)
-        effective = new_prio;
-
-    if (effective > 0 && owner->prio > effective) {
-        owner->prio = effective;
-        pr_info("[rb_mutex] %s inherits prio %d\n", owner->comm, effective);
-
-        // 如果 owner 被阻塞，唤醒它
+    // 真正执行优先级提升
+    if (combined_prio > 0 && owner->prio > combined_prio) {
+        pr_info("[rb_mutex] %s inherits prio %d (from %d)\n",
+                 owner->comm, combined_prio, owner->prio);
+        owner->prio = combined_prio;
         wake_up_process(owner);
     }
 
-    // 向上传播优先级
-    if (info->waiting_on && info->waiting_on->owner) {
-        propagate_priority(info->waiting_on->owner, effective);
-    }
+    // 继续沿链递归传递
+    if (info->waiting_on && info->waiting_on->owner)
+        propagate_priority(info->waiting_on->owner, combined_prio);
 }
 
 bool task_still_blocking_others(struct task_struct *task) {

@@ -6,3 +6,5 @@
 *.tmp_versions
 *.o
 *.ko
+*.txt
+*.o.d
