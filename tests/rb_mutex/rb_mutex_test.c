@@ -1,7 +1,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
-#include <linux/rtmutex.h>
+#include <linux/rb_mutex.h>
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
 #include <linux/delay.h>

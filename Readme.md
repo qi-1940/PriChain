@@ -65,3 +65,18 @@ Linux 锁优先级传递
 ## 任务
   1. rtmutex.h .c.h全看
   2. rtmutex.c分模块读，然后简化。三个人分工，问AI。
+
+## 视频播放流程
+0. 通过终端展示环境——openeuler
+1. 现场宏定义，运行make menuconfig
+2. 编译安装内核
+3. 现场更换内核
+4. 转到test文件夹，依次运行展示
+    - mutex未实现翻转
+    - rtmutex实现翻转但是未集成调度点
+    - rb_mutex实现翻转也集成了调度点
+    - rb_rwmutex
+    - rwlock
+    - rb_rwsem
+    - rwsem
+5. 展示对4.19.325源码的修改
