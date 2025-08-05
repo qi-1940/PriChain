@@ -1,0 +1,1 @@
+这是测试文件夹。如需测试，只需运行test.sh。测试源码位于子文件夹：mutex、rwlock和rwsem，分别对应互斥锁、读写锁和读写信号量。测试设计文档位于项目根目录下的Docs/tests_design.md。
