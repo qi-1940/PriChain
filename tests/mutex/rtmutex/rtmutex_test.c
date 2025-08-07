@@ -4,15 +4,16 @@
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
 #include <linux/completion.h>
+#include <linux/cpumask.h>
 
-#include <linux/rb_mutex.h>
+#include <linux/rtmutex.h>
 
 struct sched_param {
     int sched_priority;
 };
 
 // 锁声明
-static struct rb_mutex lock_l1;
+static struct rt_mutex lock_l1;
 
 // 同步机制
 static struct completion p0_get_l1;
@@ -47,13 +48,15 @@ static int thread_p0_func(void *data) {
     sched_setscheduler_nocheck(current, SCHED_FIFO, &sp);
 
     pr_info("p0_begin\n");
-    rb_mutex_lock(&lock_l1);
+    rt_mutex_lock(&lock_l1);
     pr_info("p0_l1\n");
     complete(&p0_get_l1);
+
     schedule();
+    
     keep_some_time();
     schedule();
-    rb_mutex_unlock(&lock_l1);
+    rt_mutex_unlock(&lock_l1);
     schedule();
     pr_info("p0_end\n");
     return 0;
@@ -66,6 +69,7 @@ static int thread_p1_func(void *data) {
 
     pr_info("p1_begin\n");
     complete(&p1_begin);
+    schedule();
     while (count < 10) {
         keep_some_time();
         schedule();
@@ -81,22 +85,28 @@ static int thread_p2_func(void *data) {
 
     pr_info("p2_begin\n");
     pr_info("p2_try\n");
-    rb_mutex_lock(&lock_l1);
-    pr_info("p2_l2\n");
+    rt_mutex_lock(&lock_l1);
+    pr_info("p2_l1\n");
     keep_some_time();
-    rb_mutex_unlock(&lock_l1);
+    rt_mutex_unlock(&lock_l1);
     pr_info("p2_end\n");
     complete(&p2_finished);
     return 0;
 }
 
 static int __init test_init(void) {
+    struct cpumask cpu_mask;
     struct sched_param sp = { .sched_priority = 60 };
     sched_setscheduler(current, SCHED_FIFO, &sp);
 
-    pr_info("rb_mutex\n");
+    // 绑定主线程到CPU 0
+    cpumask_clear(&cpu_mask);
+    cpumask_set_cpu(2, &cpu_mask);
+    set_cpus_allowed_ptr(current, &cpu_mask);
 
-    rb_mutex_init(&lock_l1);
+    pr_info("rt_mutex\n");
+
+    rt_mutex_init(&lock_l1);
     init_completion(&p0_get_l1);
     init_completion(&p2_finished);
     init_completion(&p1_begin);
@@ -105,13 +115,13 @@ static int __init test_init(void) {
     wait_for_completion(&p0_get_l1);
     p1 = create_and_start_thread(thread_p1_func,0,1);
     wait_for_completion(&p1_begin);
-    p2 = create_and_start_thread(thread_p2_func,0,2);
+    p2 = create_and_start_thread(thread_p2_func,1,2);
     wait_for_completion(&p2_finished);
     return 0;
 }
 
 static void __exit test_exit(void) {
-    pr_info("rb_mutex_end\n");
+    pr_info("rt_mutex_end\n");
 }
 
 module_init(test_init);
