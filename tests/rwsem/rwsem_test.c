@@ -13,12 +13,6 @@ static struct task_struct *reader1, *reader2, *writer;
 static struct completion r1_done, r2_done;
 static u64 block_start, lock_acquire;
 
-static void print_prio(const char *tag)
-{
-    pr_alert("%s: comm=%s pid=%d prio=%d normal_prio=%d\n",
-             tag, current->comm, current->pid, current->prio, current->normal_prio);
-}
-
 static int reader1_fn(void *data)
 {
     struct timeval tv;

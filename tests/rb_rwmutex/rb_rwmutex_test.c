@@ -14,7 +14,6 @@
 static struct rb_rwmutex test_rwlock;
 static struct task_struct *task_l1, *task_l2, *task_w, *task_h;
 static struct completion l1_has_lock, l2_has_lock, w_has_lock;
-static u64 h_block_start_time, h_lock_acquire_time;
 static u64 w_block_start_time, w_lock_acquire_time;
 
 static void print_prio(const char *tag)
